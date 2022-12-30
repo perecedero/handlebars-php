@@ -164,10 +164,10 @@ class Template
                 break;
             case Tokenizer::T_UNESCAPED:
             case Tokenizer::T_UNESCAPED_2:
-                $buffer .= $this->variables($context, $current, false);
+                $buffer .= $this->getReplacingValue($context, $current, false);
                 break;
             case Tokenizer::T_ESCAPED:
-                $buffer .= $this->variables($context, $current, true);
+                $buffer .= $this->getReplacingValue($context, $current, true);
                 break;
             case Tokenizer::T_TEXT:
                 $buffer .= $current[Tokenizer::VALUE];
@@ -327,10 +327,45 @@ class Template
         $partial = $this->handlebars->loadPartial($current[Tokenizer::NAME]);
 
         if ($current[Tokenizer::ARGS]) {
-            $context = $context->get($current[Tokenizer::ARGS]);
+            $arguments = new Arguments($current[Tokenizer::ARGS]);
+
+            $context = new Context($this->preparePartialArguments($context, $arguments));
         }
 
         return $partial->render($context);
+    }
+
+    /**
+     * Prepare the arguments of a partial to actual array values to be used in a new context
+     *
+     * @param Context   $context   Current context
+     * @param Arguments $arguments Arguments for partial
+     *
+     * @return array
+     */
+    private function preparePartialArguments(Context $context, Arguments $arguments)
+    {
+        $positionalArgs = array();
+        foreach ($arguments->getPositionalArguments() as $positionalArg) {
+            $contextArg = $context->get($positionalArg);
+            if (is_array($contextArg)) {
+                foreach ($contextArg as $key => $value) {
+                    $positionalArgs[$key] = $value;
+                }
+            } else {
+                $positionalArgs[$positionalArg] = $contextArg;
+            }
+        }
+
+        $namedArguments = array();
+        foreach ($arguments->getNamedArguments() as $key => $value) {
+
+            $val = ($value instanceof \Handlebars\HandlebarsString) ? (string)$value : $context->get($value);
+
+            $namedArguments[$key] = $val;
+        }
+
+        return array_merge($positionalArgs, $namedArguments);
     }
 
     /**
@@ -346,6 +381,11 @@ class Template
     {
         $name = $current[Tokenizer::NAME];
         $value = $context->get($name);
+
+        if (is_array($value)) {
+            dump($value);
+            return 'Array';
+        }
 
         // If @data variables are enabled, use the more complex algorithm for handling the the variables otherwise
         // use the previous version.
@@ -378,6 +418,76 @@ class Template
 
         return $value;
     }
+
+    /**
+     * Check if there is a helper with this variable name available or not.
+     *
+     * @param array $current current token
+     *
+     * @return boolean
+     */
+    private function isSection($current)
+    {
+        $helpers = $this->getEngine()->getHelpers();
+        // Tokenizer doesn't process the args -if any- so be aware of that
+        $name = explode(' ', $current[Tokenizer::NAME], 2);
+
+        return $helpers->has(reset($name));
+    }
+
+
+    /**
+     * Get replacing value of a tag
+     *
+     * Will process the tag as section, if a helper with the same name could be
+     * found, so {{helper arg}} can be used instead of {{#helper arg}}.
+     *
+     * @param Context $context current context
+     * @param array   $current section node data
+     * @param boolean $escaped escape result or not
+     *
+     * @return string the string to be replaced with the tag
+     */
+    private function getReplacingValue(Context $context, $current, $escaped)
+    {
+        if ($this->isSection($current)) {
+            return $this->getSection($context, $current, $escaped);
+        } else {
+            return $this->variables($context, $current, $escaped);
+        }
+    }
+
+    /**
+     * Process section
+     *
+     * @param Context $context current context
+     * @param array   $current section node data
+     * @param boolean $escaped escape result or not
+     *
+     * @return string the result
+     */
+    private function getSection(Context $context, $current, $escaped)
+    {
+        $args = explode(' ', $current[Tokenizer::NAME], 2);
+        $name = array_shift($args);
+        $current[Tokenizer::NAME] = $name;
+        $current[Tokenizer::ARGS] = implode(' ', $args);
+        $result = $this->_section($context, $current);
+
+        if ($escaped && !($result instanceof HandlebarsString)) {
+            $escape_args = $this->handlebars->getEscapeArgs();
+            array_unshift($escape_args, $result);
+            $result = call_user_func_array(
+                $this->handlebars->getEscape(),
+                array_values($escape_args)
+            );
+        }
+
+        return $result;
+    }
+
+
+
 
     public function __clone()
     {
